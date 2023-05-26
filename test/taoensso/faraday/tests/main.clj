@@ -1,6 +1,6 @@
 (ns taoensso.faraday.tests.main
   (:require
-   [clojure.test :refer [deftest is testing use-fixtures]]
+   [clojure.test :refer [deftest is testing use-fixtures run-tests]]
    [taoensso.encore :as encore]
    [taoensso.faraday :as far]
    [taoensso.nippy :as nippy])
@@ -795,6 +795,24 @@
      (is nil? (:lsindexes created))
      (is nil? (:gsindexes created))
      (is (= {:artist {:key-type :hash, :data-type :s}} (:prim-keys created)))))
+
+  (testing "Table creation / update / describe with deletion-protection"
+    (do-with-temp-table
+      [created (far/create-table *client-opts* temp-table
+                                 [:artist :s]
+                                 {:range-keydef [:song-title :s]
+                                  :throughput {:read 1 :write 1}
+                                  :block? true
+                                  :deletion-protection true})
+       updated-off (far/update-table *client-opts* temp-table
+                                     (:deletion-protection false))
+       updated-on (far/update-table *client-opts* temp-table
+                                     (:deletion-protection false))
+       described (far/describe-table *client-opts* temp-table)]
+      (is (= true (:deletion-protection created)))
+      (is (= false (:deletion-protection updated-off)))
+      (is (= true (:deletion-protection updated-on)))
+      (is (= true (:deletion-protection described)))))
 
   (testing "Table creation with range key"
     (do-with-temp-table

@@ -16,7 +16,7 @@
    [com.taoensso/nippy  "3.2.0"]
    [joda-time           "2.12.2"]
    [commons-logging     "1.2"]
-   [com.amazonaws/aws-java-sdk-dynamodb "1.12.410"
+   [com.amazonaws/aws-java-sdk-dynamodb "1.12.472"
     :exclusions [joda-time commons-logging]]]
 
   :profiles

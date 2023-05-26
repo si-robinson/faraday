@@ -451,6 +451,7 @@
      :latest-stream-label (.getLatestStreamLabel d)
      :latest-stream-arn   (.getLatestStreamArn d)
      :status              (utils/un-enum (.getTableStatus d))
+     :deletion-protection (.getDeletionProtectionEnabled d)
      :prim-keys
      (let [schema (as-map (.getKeySchema d))
            defs   (as-map (.getAttributeDefinitions d))]
@@ -740,9 +741,10 @@
 
 (defn- create-table-request "Implementation detail."
   [table-name hash-keydef
-   & [{:keys [range-keydef throughput lsindexes gsindexes stream-spec billing-mode]
+   & [{:keys [range-keydef throughput lsindexes gsindexes stream-spec billing-mode deletion-protection]
        :or   {billing-mode :provisioned} :as opts}]]
   (assert (not (and throughput (= :pay-per-request billing-mode))) "Can't specify :throughput and :pay-per-request billing-mode")
+  (assert (or (not (contains? opts :deletion-protection)) (boolean? deletion-protection)) ":deletion-protection must be true, false or not present")
   (let [lsindexes (or lsindexes (:indexes opts))]
     (doto-cond [_ (CreateTableRequest.)]
       :always (.setTableName (name table-name))
@@ -756,22 +758,24 @@
       gsindexes (.setGlobalSecondaryIndexes
                  (global-2nd-indexes gsindexes billing-mode))
       stream-spec (.setStreamSpecification
-                   (stream-specification stream-spec)))))
+                   (stream-specification stream-spec))
+      deletion-protection (.setDeletionProtectionEnabled deletion-protection))))
 
 (defn create-table
   "Creates a table with options:
-    hash-keydef   - [<name> <#{:s :n :ss :ns :b :bs}>].
-    :range-keydef - [<name> <#{:s :n :ss :ns :b :bs}>].
-    :throughput   - {:read <units> :write <units>}.
-    :billing-mode - :provisioned | :pay-per-request ; defaults to provisioned
-    :block?       - Block for table to actually be active?
-    :lsindexes    - [{:name _ :range-keydef _
-                      :projection <#{:all :keys-only [<attr> ...]}>}].
-    :gsindexes    - [{:name _ :hash-keydef _ :range-keydef _
-                      :projection <#{:all :keys-only [<attr> ...]}>
-                      :throughput _}].
-    :stream-spec  - {:enabled? <default true if spec is present>
-                     :view-type <#{:keys-only :new-image :old-image :new-and-old-images}>}"
+    hash-keydef          - [<name> <#{:s :n :ss :ns :b :bs}>].
+    :range-keydef        - [<name> <#{:s :n :ss :ns :b :bs}>].
+    :throughput          - {:read <units> :write <units>}.
+    :billing-mode        - :provisioned | :pay-per-request ; defaults to provisioned
+    :block?              - Block for table to actually be active?
+    :lsindexes           - [{:name _ :range-keydef _
+                             :projection <#{:all :keys-only [<attr> ...]}>}].
+    :gsindexes           - [{:name _ :hash-keydef _ :range-keydef _
+                             :projection <#{:all :keys-only [<attr> ...]}>
+                             :throughput _}].
+    :stream-spec         - {:enabled? <default true if spec is present>
+                            :view-type <#{:keys-only :new-image :old-image :new-and-old-images}>}
+    :deletion-protection - boolean <default false if not present>"
   [client-opts table-name hash-keydef
    & [{:keys [block?] :as opts}]]
   (let [result
@@ -835,7 +839,7 @@
     nil))
 
 (defn- update-table-request "Implementation detail."
-  [table table-desc {:keys [throughput gsindexes stream-spec billing-mode] :as params}]
+  [table table-desc {:keys [throughput gsindexes stream-spec billing-mode deletion-protection] :as params}]
   (assert (not (and throughput
                (= :pay-per-request billing-mode))) "Can't specify :throughput and :pay-per-request billing-mode")
   (let [attr-defs (keydefs nil nil nil [gsindexes])]
@@ -846,11 +850,13 @@
       billing-mode (.setBillingMode (utils/enum billing-mode))
       gsindexes (.setGlobalSecondaryIndexUpdates [(global-2nd-index-updates table-desc gsindexes)])
       stream-spec (.setStreamSpecification (stream-specification stream-spec))
+      (contains? params :deletion-protection) (.setDeletionProtectionEnabled deletion-protection)
       (seq attr-defs) (.setAttributeDefinitions attr-defs))))
 
-(defn- validate-update-opts [table-desc {:keys [throughput billing-mode] :as params}]
+(defn- validate-update-opts [table-desc {:keys [throughput billing-mode deletion-protection] :as params}]
   (let [{read* :read write* :write} throughput
         current-throughput (:throughput table-desc)
+        current-deletion-protection (:deletion-protection table-desc)
         {:keys [read write num-decreases-today]} current-throughput
         read*              (or read* read)
         write*             (or write* write)
@@ -874,6 +880,15 @@
            (= (:write throughput) (:write current-throughput)))
       (dissoc params :throughput)
 
+      ;; Only allow boolean for deletion-protection
+      (and (contains? params :deletion-protection)
+           (not (boolean? deletion-protection)))
+      (throw (Exception. ":deletion-protection must be true or false if present"))
+
+      ;; Only send a deletion-protection update req if it would change the setting
+      (= current-deletion-protection deletion-protection)
+      (dissoc params :deletion-protection)
+
       :else params)))
 
 (defn update-table
@@ -881,16 +896,17 @@
   description.
 
   Update opts:
-    :throughput   - {:read <units> :write <units>}
-    :billing-mode - :provisioned | :pay-per-request   ; defaults to provisioned
-    :gsindexes    - {:operation                       ; e/o #{:create :update :delete}
-                    :name                             ; Required
-                    :throughput                       ; Only for :update / :create
-                    :hash-keydef                      ; Only for :create
-                    :range-keydef                     ;
-                    :projection                       ; e/o #{:all :keys-only [<attr> ...]}}
-    :stream-spec  - {:enabled?                        ;
-                    :view-type                        ; e/o #{:keys-only :new-image :old-image :old-and-new-images}}
+    :throughput          - {:read <units> :write <units>}
+    :billing-mode        - :provisioned | :pay-per-request   ; defaults to provisioned
+    :gsindexes           - {:operation                       ; e/o #{:create :update :delete}
+                           :name                             ; Required
+                           :throughput                       ; Only for :update / :create
+                           :hash-keydef                      ; Only for :create
+                           :range-keydef                     ;
+                           :projection                       ; e/o #{:all :keys-only [<attr> ...]}}
+    :stream-spec         - {:enabled?                        ;
+                           :view-type                        ; e/o #{:keys-only :new-image :old-image :old-and-new-images}}
+    :deletion-protection - boolean
 
   Only one global secondary index operation can take place at a time.
   In order to change a stream view-type, you need to disable and re-enable the stream."
